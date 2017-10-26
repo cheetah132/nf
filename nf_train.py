@@ -12,6 +12,8 @@ from datetime import datetime
 import align.detect_face
 import cv2
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import pandas as pd
 import scipy
@@ -29,13 +31,13 @@ import helper
 #Ignore warnings
 import warnings
 warnings.filterwarnings('ignore')
-plt.ion()
+plt.ioff()
 
 print('set train data')
 # set train data
 batch_size = 100
 
-landmarks_frame = pd.read_csv('./face_landmarks.csv')
+landmarks_frame = pd.read_csv('./face_landmarks_detects.csv')
 file_list = landmarks_frame.image_name.values.tolist()
 
 avgP_container = np.load('f_avgP_list.npz')
@@ -204,7 +206,10 @@ def make_path(file_name) :
 print(make_path(loss_file_name))
 
 # hyperparam
-epochs = 300
+epochs = 200
+learning_rate = 0.001
+chk_interval = 50
+log_interval = 100
 
 avgP_num = 1792
 emb_num = 128
@@ -295,7 +300,7 @@ with g.as_default():
     
     total_cost = l_loss + t_loss + w_loss
     
-    opt = tf.train.AdamOptimizer(0.0001)# .minimize(total_cost)
+    opt = tf.train.AdamOptimizer(learning_rate)# .minimize(total_cost)
     
     config = tf.ConfigProto(allow_soft_placement = True)
     sess = tf.Session(config = config)
@@ -315,18 +320,28 @@ with g.as_default():
     
     sess.run(tf.global_variables_initializer())
 
+def get_landmarks(index) :
+    index = len(train_set) * batch_size + index
+    return landmarks_frame.ix[index]
+
 def write_test_image(dir_name, e, l_x, l_y, t, w):
     t_img = scipy.misc.toimage(t)
+    w_img = scipy.misc.toimage(w)
+    
     lt_file_name = dir_name + '/' + str(e) + '_lt.jpg'
     w_file_name = dir_name + '/' + str(e) + '_w.jpg'
     
-    plt.figure()
-    plt.imshow(t)
-    plt.scatter(l_x, l_y, s=10, marker='.', c='b')
-    plt.savefig(lt_file_name)
+    misc.imsave(lt_file_name, t_img)
+    misc.imsave(w_file_name, w_img)
+
+    # fig = plt.figure()
+    # plt.imshow(t)
+    # plt.scatter(l_x, l_y, s=10, marker='.', c='b')
+    # plt.savefig(lt_file_name)
     
-    plt.imshow(w)
-    plt.savefig(w_file_name)
+    # plt.imshow(w)
+    # plt.savefig(w_file_name)
+    # plt.close(fig)
 
 print('start train')
 with g.as_default():
@@ -334,7 +349,6 @@ with g.as_default():
         start_test = time.time()
         
         for e in range(epochs):
-            log_index = 1
             l_x_cost_sum = 0
             l_y_cost_sum = 0
             t_cost_sum = 0
@@ -351,7 +365,7 @@ with g.as_default():
                        l_y_loss, 
                        t_loss, 
                        w_loss,
-                       apply_grads, l_x_preds, l_y_preds]
+                       apply_grads]
                 
                 feed_dict = {avgP_inputs : f_avgP.reshape(-1, avgP_num),
                              l_x_labels : l_labels[:, :, 0].reshape(-1, l_num), 
@@ -365,18 +379,18 @@ with g.as_default():
                  l_y_cost, 
                  t_cost, 
                  w_cost, 
-                 _, _l_x, _l_y) = out
+                 _) = out
                 
                 l_x_cost_sum += l_x_cost
                 l_y_cost_sum += l_y_cost
                 t_cost_sum += t_cost
                 w_cost_sum += w_cost
 
-                if (i+1) % log_index == 0 :
+                if (i+1) % log_interval == 0 :
                     loss_log = "Iter: {}/{}".format(i+1, len(train_set))
-                    loss_log += "Training loss: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_index, l_y_cost_sum / log_index, t_cost_sum / log_index, w_cost_sum / log_index)
+                    loss_log += "Training loss: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_interval, l_y_cost_sum / log_interval, t_cost_sum / log_interval, w_cost_sum / log_interval)
                     print(loss_log)
-                    f = open(loss_file_name, "w")
+                    f = open(loss_file_name, "a")
                     f.write(loss_log +'\n')
                     f.close
 
@@ -385,7 +399,7 @@ with g.as_default():
                     t_cost_sum = 0
                     w_cost_sum = 0
 
-
+                    
             test_index = random.randint(0, len(test_set[0])-1)
             test_avgP = test_set[0][test_index] 
             t_landmarks = get_landmarks(test_index)
@@ -400,15 +414,15 @@ with g.as_default():
 
             t_l_x, t_l_y, t_t, t_w = sess.run(test_run, feed_dict= test_feed)
             write_test_image(log_dir, e, 
-                            t_l_x.reshape(l_num),
-                            t_l_y.reshape(l_num), 
-                            t_t.reshape(t_size, t_size, t_channel), 
-                            t_w.reshape(t_size, t_size, t_channel))
+                             t_l_x.reshape(l_num),
+                             t_l_y.reshape(l_num), 
+                             t_t.reshape(t_size, t_size, t_channel), 
+                             t_w.reshape(t_size, t_size, t_channel))
                 
             print("Epoch: {}/{}".format(e+1, epochs), "Time: %s" % (time.time() - start_test))
             
 
-            chk_name = "./chk/" + str(int((e+1)/50)) + "/nf.ckpt"
+            chk_name = log_dir + "/chk/" + str(int((e+1)/chk_interval)) + "/nf.ckpt"
             chk_name = make_path(chk_name)
             saver = tf.train.Saver()
             save_path = saver.save(sess, chk_name)
