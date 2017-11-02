@@ -28,14 +28,21 @@ import tensorflow.contrib.slim as slim
 import facenet
 import helper
 
+print('Load dlib')
+import dlib
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor('../../dlib_b/python_examples/shape_predictor_68_face_landmarks.dat')
+
 #Ignore warnings
 import warnings
 warnings.filterwarnings('ignore')
 plt.ioff()
 
-print('set train data')
+print('Set Train Data')
 # set train data
 batch_size = 100
+
+train_set = []
 
 landmarks_frame = pd.read_csv('./face_landmarks_detects.csv')
 file_list = landmarks_frame.image_name.values.tolist()
@@ -43,65 +50,118 @@ file_list = landmarks_frame.image_name.values.tolist()
 avgP_container = np.load('f_avgP_list.npz')
 emb_container = np.load('f_emb_list.npz')
 
-train_set = []
-test_set = []
-
 for key in sorted(emb_container, key=lambda x: int(x.strip('arr_'))) :
     batch = avgP_container[key], emb_container[key]
     if len(batch[0]) == batch_size :
         train_set.append(batch)
-    else :
-        test_set.append(batch)
-
-test_set = train_set[-1]
-train_set = train_set[0:-1]
 
 t_dataset = helper.Dataset('nf',file_list, 160)
 
-print('set model')
-# set model
-def F_layer(encoded, f_num = 128) : 
-    with tf.variable_scope('F') :
-        fc = slim.fully_connected(encoded, f_num, activation_fn=tf.nn.relu, scope='fc')
-    return fc
 
-def MLP(net, landmark_num = 68, reuse=None, scope='MLP'):
-    """Builds the MLP for landmark"""
-    with tf.variable_scope(scope, 'MLP') :
-        net = slim.fully_connected(net, 256, activation_fn=tf.nn.relu, scope='fc0')
-        net = slim.fully_connected(net, 128, activation_fn=tf.nn.relu, scope='fc1')
-        net = slim.fully_connected(net, landmark_num, activation_fn=tf.nn.relu, scope='fc2')
+test_set = []
+
+t_file_list = glob('./SNF_TESTSET/*')
+
+t_avgP_container = np.load('f_avgP_list_wild.npz')
+t_emb_container = np.load('f_emb_list_wild.npz')
+
+for key in sorted(t_emb_container, key=lambda x: int(x.strip('arr_'))) :
+    batch = t_avgP_container[key], t_emb_container[key]
+    test_set.append(batch)
+
+t_t_dataset = helper.Dataset('nf',t_file_list, 160)
+
+print('Set Model')
+# set model
+def l_init() :
+    return tf.contrib.layers.variance_scaling_initializer()
+
+def F_layer(net, f_num = 1024, is_training=False) : 
+    with tf.variable_scope('F') :
+        net = slim.fully_connected(net, f_num, weights_initializer=l_init(),scope='fc0')
+        net = slim.fully_connected(net, f_num, weights_initializer=l_init(),scope='fc1')
     return net
 
-def landmark_decode(net, landmark_num = 68):
+def MLP(net, landmark_num = 68, is_training=False, reuse=None, scope='MLP'):
+    """Builds the MLP for landmark"""
+    with tf.variable_scope(scope, 'MLP') :
+        net = slim.fully_connected(net, 1024, weights_initializer=l_init(), scope='fc0')
+        net = slim.fully_connected(net, 512, weights_initializer=l_init(), scope='fc1')
+        net = slim.fully_connected(net, 256, weights_initializer=l_init(), scope='fc2')
+        net = slim.fully_connected(net, 128, weights_initializer=l_init(), scope='fc3')
+        net = slim.fully_connected(net, landmark_num, activation_fn=None, weights_initializer=l_init(), scope='fc4')
+    return net
+
+def landmark_decode(net, landmark_num = 68, is_training=False):
     with tf.variable_scope('landmark') :
-        decoded_x = MLP(net, scope= 'decoded_x')
-        decoded_y = MLP(net, scope= 'decoded_y')
+        decoded_x = MLP(net, is_training=is_training, scope= 'decoded_x')
+        decoded_y = MLP(net, is_training=is_training, scope= 'decoded_y')
     return decoded_x, decoded_y
 
 def CNN(F, size) :
     with tf.variable_scope('CNN') :
-        # 12 x 12 x 256
-        f_size = int(size / 8)
-        features = slim.fully_connected(F, f_size * f_size * 256, activation_fn=None, scope="features")
-        features = tf.reshape(features, [-1, f_size, f_size, 256])
-        # print(features.shape)
+        # 10 x 10 x 1024
+        with tf.variable_scope('features') :
+            f_size = int(size / 16)
+            features = slim.fully_connected(F, f_size * f_size * 512, weights_initializer= l_init(), activation_fn=None, scope="features")
+            features = tf.reshape(features, [-1, f_size, f_size, 512])
+            features = tf.nn.relu(features)
+            print(features.shape)
+            
+        # 10 x 10 x 512
+        with tf.variable_scope('upsample_0') :
+            conv_0 = tf.layers.conv2d(features, 512, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_0 = tf.layers.conv2d(conv_0, 512, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_0 = tf.nn.relu(conv_0 + features)
+            print(conv_0.shape)
         
-        # 24 x 24 x 128
-        upsample_0 = slim.conv2d_transpose(features, 128, 5, stride=2, scope="upsample_0")
-        # print(upsample_0.shape)
+        # 20 x 20 x 256
+        with tf.variable_scope('upsample_1') :
+            f_size *= 2
+            upsample_1 = tf.image.resize_nearest_neighbor(conv_0, (f_size, f_size))
+            conv_1 = tf.layers.conv2d(upsample_1, 256, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_1 = tf.layers.conv2d(upsample_1, 256, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            
+            upsample_1 = tf.layers.conv2d(upsample_1, 256, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_1 = tf.nn.relu(conv_1 + upsample_1)
+            print(conv_1.shape)
+    
+        # 40 x 40 x 128
+        with tf.variable_scope('upsample_2') :
+            f_size *= 2
+            upsample_2 = tf.image.resize_nearest_neighbor(conv_1, (f_size, f_size))
+            conv_2 = tf.layers.conv2d(upsample_2, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_2 = tf.layers.conv2d(upsample_2, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            
+            upsample_2 = tf.layers.conv2d(upsample_2, 128, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_2 = tf.nn.relu(conv_2 + upsample_2)
+            print(conv_2.shape)
         
-        # 48 x 48 x 64
-        upsample_1 = slim.conv2d_transpose(upsample_0, 64, 5, stride=2, scope="upsample_1")
-        # print(upsample_1.shape)
+        # 80 x 80 x 64
+        with tf.variable_scope('upsample_3') :
+            f_size *= 2
+            upsample_3 = tf.image.resize_nearest_neighbor(conv_2, (f_size, f_size))
+            conv_3 = tf.layers.conv2d(upsample_3, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_3 = tf.layers.conv2d(upsample_3, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            
+            upsample_3 = tf.layers.conv2d(upsample_3, 64, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_3 = tf.nn.relu(conv_3 + upsample_3)
+            print(conv_3.shape)
         
-        # 96 x 96 x 32
-        upsample_2 = slim.conv2d_transpose(upsample_1, 32, 5, stride=2, scope="upsample_2")
-        # print(upsample_2.shape)
+        # 160 x 160 x 32
+        with tf.variable_scope('upsample_4') :
+            f_size *= 2
+            upsample_4 = tf.image.resize_nearest_neighbor(conv_3, (f_size, f_size))
+            conv_4 = tf.layers.conv2d(upsample_4, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_4 = tf.layers.conv2d(upsample_4, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            
+            upsample_4 = tf.layers.conv2d(upsample_4, 32, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_4 = tf.nn.relu(conv_4 + upsample_4)
+            print(upsample_4.shape)
         
-        # 96 x 96 x 3
-        one_by_one_conv = slim.conv2d(upsample_2, 3, 1, stride=1, activation_fn=None, scope="one_by_one_conv")
-        # print(one_by_one_conv.shape)
+        with tf.variable_scope('one_by_one_conv') :
+            one_by_one_conv = tf.layers.conv2d(conv_4, 3, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+        
     return one_by_one_conv
 
 def texture_decode(net, size) :
@@ -132,7 +192,6 @@ def rbf_tf(pred_x, pred_y, correct_points, grids, grid_shape):
         euclidean_norm = tf.square(euclidean_norm)
         euclidean_norm = tf.reduce_sum(euclidean_norm, 1)
         euclidean_norm = tf.add(euclidean_norm, 1e-10)
-        #euclidean_norm = tf.clip_by_value(euclidean_norm, 0.1, 10**5)
         euclidean_norm = tf.sqrt(euclidean_norm)
         return euclidean_norm
         
@@ -187,7 +246,7 @@ def warp_tf(data, pred_x, pred_y, correct_x, correct_y, grids, grid_shape, zero_
         resample = tf.contrib.resampler.resampler(data=data, warp=warp)
     return resample
 
-print('set hyperparam')
+print('Set Hyperparam')
 # summary
 base_dir = os.path.expanduser('logs')
 subdir = datetime.strftime(datetime.now(), '%Y%m%d-%H%M%S')
@@ -206,14 +265,14 @@ def make_path(file_name) :
 print(make_path(loss_file_name))
 
 # hyperparam
-epochs = 200
-learning_rate = 0.001
-chk_interval = 50
-log_interval = 100
+epochs = 100
+learning_rate = 1e-4
+chk_interval = 5
+log_interval = 1
 
 avgP_num = 1792
 emb_num = 128
-f_num = 1024
+f_num = 1792
 
 l_num = 68
 zd_l_num = 76
@@ -243,6 +302,8 @@ with g.as_default():
     t_labels = tf.placeholder(tf.float32, (None, t_size, t_size, t_channel), name='t_labels')
     w_labels = tf.placeholder(tf.float32, shape=(None, emb_num), name= 'w_labels')
     
+    is_training = tf.placeholder(tf.bool)
+    
     grids = tf.constant(xa, dtype=tf.float32, name= 'grids')
     grids_test = tf.constant(xa_t, dtype=tf.float32, name= 'grids')
     
@@ -252,17 +313,17 @@ with g.as_default():
                               tf.constant(zd_t[:, :, 1], dtype=tf.float32, name= 'zd_y_t'))
     
     # model
-    F = F_layer(avgP_inputs, f_num= f_num)
+    F = F_layer(avgP_inputs, f_num= f_num, is_training=is_training)
     
-    (l_x_preds, l_y_preds) = landmark_decode(F, landmark_num= l_num)
+    (l_x_preds, l_y_preds) = landmark_decode(F, landmark_num= l_num, is_training=is_training)
     
-    l_x_loss = tf.losses.mean_squared_error(l_x_labels, l_x_preds, reduction="weighted_mean")
-    l_y_loss = tf.losses.mean_squared_error(l_y_labels, l_y_preds, reduction="weighted_mean")
+    l_x_loss = tf.losses.mean_squared_error(l_x_labels, l_x_preds, reduction="weighted_mean", weights=1.0)
+    l_y_loss = tf.losses.mean_squared_error(l_y_labels, l_y_preds, reduction="weighted_mean", weights=1.0)
     
     l_loss = tf.add(l_x_loss, l_y_loss)
     
     t_preds = texture_decode(F, t_size)
-    t_loss = tf.losses.absolute_difference(t_labels, t_preds)
+    t_loss = tf.losses.absolute_difference(t_labels, t_preds, weights=100.0)
     
     with tf.variable_scope('warp') :
         warp = warp_tf(t_preds, 
@@ -296,52 +357,73 @@ with g.as_default():
 
     f_phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
     w_preds = tf.get_default_graph().get_tensor_by_name("embeddings:0")    
-    w_loss = tf.losses.cosine_distance(w_labels, w_preds, dim=1)
+    
+    w_labels = tf.nn.l2_normalize(w_labels, 1)
+    w_preds = tf.nn.l2_normalize(w_preds, 1)
+    w_loss = tf.losses.cosine_distance(w_labels, w_preds, dim=1, weights=10.0)
     
     total_cost = l_loss + t_loss + w_loss
-    
-    opt = tf.train.AdamOptimizer(learning_rate)# .minimize(total_cost)
+    opt = tf.train.AdamOptimizer(learning_rate).minimize(total_cost)
     
     config = tf.ConfigProto(allow_soft_placement = True)
     sess = tf.Session(config = config)
     
-    grads = tf.gradients(total_cost, tf.trainable_variables())
-    grads = list(zip(grads, tf.trainable_variables()))
-    apply_grads = opt.apply_gradients(grads_and_vars=grads)
-    
-    for grad, var in grads:
-        tf.summary.histogram(var.op.name + '/gradient', grad)
-    
-    for var in tf.trainable_variables():
-        tf.summary.histogram(var.op.name, var)
-    
-    summary_op = tf.summary.merge_all()
-    summary_writer = tf.summary.FileWriter(log_dir, sess.graph)    
-    
     sess.run(tf.global_variables_initializer())
 
-def get_landmarks(index) :
-    index = len(train_set) * batch_size + index
+def get_landmarks(n) :
+    index = n[0] * batch_size + n[1]
     return landmarks_frame.ix[index]
 
-def write_test_image(dir_name, e, l_x, l_y, t, w):
-    t_img = scipy.misc.toimage(t)
-    w_img = scipy.misc.toimage(w)
-    
-    lt_file_name = dir_name + '/' + str(e) + '_lt.jpg'
-    w_file_name = dir_name + '/' + str(e) + '_w.jpg'
-    
-    misc.imsave(lt_file_name, t_img)
-    misc.imsave(w_file_name, w_img)
+def detect_landmarks(img, num_landmarks = 68) :
+    scipy.misc.imsave('tmp.jpg',img)
+    img = scipy.misc.imread('tmp.jpg')
+    dets = detector(img, 1)  # face detection
 
-    # fig = plt.figure()
-    # plt.imshow(t)
-    # plt.scatter(l_x, l_y, s=10, marker='.', c='b')
-    # plt.savefig(lt_file_name)
+    # ignore all the files with no or more than one faces detected.
+    if len(dets) == 1:
+        row = []
+
+        d = dets[0]
+        # Get the landmarks/parts for the face in box d.
+        shape = predictor(img, d)
+        for i in range(num_landmarks):
+            part_i_x = shape.part(i).x
+            part_i_y = shape.part(i).y
+            row += [[part_i_x, part_i_y]]
+        return np.asarray(row, dtype=np.float32) 
+    else :
+        return None
+
+def write_test_image(dir_name, e, t, w, o, test_t, test_w, test_o):
+    if t is not None:
+        t_img = scipy.misc.toimage(t)
+        lt_file_name = dir_name + '/' + str(e) + '_lt.jpg'
+        misc.imsave(lt_file_name, t_img)
+
+    if w is not None:
+        w_img = scipy.misc.toimage(w)
+        w_file_name = dir_name + '/' + str(e) + '_w.jpg'
+        misc.imsave(w_file_name, w_img)
     
-    # plt.imshow(w)
-    # plt.savefig(w_file_name)
-    # plt.close(fig)
+    if o is not None:
+        o_img = scipy.misc.toimage(o)
+        o_file_name = dir_name + '/' + str(e) + '_o.jpg'
+        misc.imsave(o_file_name, o_img)
+    
+    if test_t is not None:
+        test_t_img = scipy.misc.toimage(test_t)
+        test_t_file_name = dir_name + '/' + str(e) + '_test_t.jpg'
+        misc.imsave(test_t_file_name, test_t_img)
+        
+    if test_w is not None:
+        test_w_img = scipy.misc.toimage(test_w)
+        test_w_file_name = dir_name + '/' + str(e) + '_test_w.jpg'
+        misc.imsave(test_w_file_name, test_w_img)
+        
+    if test_o is not None:
+        test_o_img = scipy.misc.toimage(test_o)
+        test_o_file_name = dir_name + '/' + str(e) + '_test_o.jpg'
+        misc.imsave(test_o_file_name, test_o_img)
 
 print('start train')
 with g.as_default():
@@ -365,14 +447,15 @@ with g.as_default():
                        l_y_loss, 
                        t_loss, 
                        w_loss,
-                       apply_grads]
+                       opt]
                 
                 feed_dict = {avgP_inputs : f_avgP.reshape(-1, avgP_num),
                              l_x_labels : l_labels[:, :, 0].reshape(-1, l_num), 
                              l_y_labels : l_labels[:, :, 1].reshape(-1, l_num),
                              t_labels : t_label_batch, 
                              w_labels : f_emb.reshape(-1, emb_num), 
-                             f_phase_train_placeholder:False}
+                             f_phase_train_placeholder:False,
+                             is_training : True}
 
                 out = sess.run(run, feed_dict= feed_dict)
                 (l_x_cost, 
@@ -388,40 +471,68 @@ with g.as_default():
 
                 if (i+1) % log_interval == 0 :
                     loss_log = "Iter: {}/{}".format(i+1, len(train_set))
-                    loss_log += "Training loss: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_interval, l_y_cost_sum / log_interval, t_cost_sum / log_interval, w_cost_sum / log_interval)
+                    loss_log += "Training loss: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_interval, 
+                                                                                                       l_y_cost_sum / log_interval, 
+                                                                                                       t_cost_sum / log_interval, 
+                                                                                                       w_cost_sum / log_interval)
                     print(loss_log)
                     f = open(loss_file_name, "a")
                     f.write(loss_log +'\n')
                     f.close
-
+                    
                     l_x_cost_sum = 0
                     l_y_cost_sum = 0
                     t_cost_sum = 0
                     w_cost_sum = 0
+        
+                    test_index = (random.randint(0, len(train_set)-1),random.randint(0, len(train_set[0])-1))
+                    test_avgP = train_set[test_index[0]][test_index[1]]
+                    t_landmarks = get_landmarks(test_index)
 
-                    
-            test_index = random.randint(0, len(test_set[0])-1)
-            test_avgP = test_set[0][test_index] 
-            t_landmarks = get_landmarks(test_index)
+                    t_img = misc.imread(t_landmarks[0])
+                    t_l_labels = t_landmarks[1:].as_matrix().astype('float32').reshape(-1, 2)
 
-            t_img = t_landmarks[0]
-            t_l_labels = t_landmarks[1:].as_matrix().astype('float32').reshape(-1, 2)
+                    test_run = [t_preds, warp_t]
+                    test_feed = {avgP_inputs : test_avgP.reshape(-1, avgP_num),
+                                 l_x_labels : t_l_labels[:, 0].reshape(-1, l_num), 
+                                 l_y_labels : t_l_labels[:, 1].reshape(-1, l_num), 
+                                 is_training : False}
 
-            test_run = [l_x_preds, l_y_preds, t_preds, warp_t]
-            test_feed = {avgP_inputs : test_avgP.reshape(-1, avgP_num),
-                         l_x_labels : t_l_labels[:, 0].reshape(-1, l_num), 
-                         l_y_labels : t_l_labels[:, 1].reshape(-1, l_num)}
+                    t_t, t_w = sess.run(test_run, feed_dict= test_feed)
 
-            t_l_x, t_l_y, t_t, t_w = sess.run(test_run, feed_dict= test_feed)
-            write_test_image(log_dir, e, 
-                             t_l_x.reshape(l_num),
-                             t_l_y.reshape(l_num), 
-                             t_t.reshape(t_size, t_size, t_channel), 
-                             t_w.reshape(t_size, t_size, t_channel))
+                    test_index = random.randint(0, len(test_set[0])-1)
+                    test_avgP = test_set[0][test_index]
+                    test_img = misc.imread(t_file_list[test_index])
+
+                    test_run = t_preds
+                    test_feed = {avgP_inputs : test_avgP.reshape(-1, avgP_num),
+                                 is_training : False}
+
+                    test_t = sess.run(test_run, feed_dict= test_feed)
+
+                    dl = detect_landmarks(test_t.reshape(t_size, t_size, t_channel))
+
+                    if dl is not None :
+                        dl = dl.reshape(-1, 2)
+                        test_run = warp_t
+                        test_feed = {avgP_inputs : test_avgP.reshape(-1, avgP_num),
+                                     l_x_labels : dl[:,0].reshape(-1, l_num), 
+                                     l_y_labels : dl[:,1].reshape(-1, l_num)}
+
+                        test_w = sess.run(test_run, feed_dict= test_feed)
+                    else :
+                        test_w = None
+
+                    write_test_image(log_dir, e, 
+                                     t_t.reshape(t_size, t_size, t_channel), 
+                                     t_w.reshape(t_size, t_size, t_channel), 
+                                     t_img.reshape(t_size, t_size, t_channel), 
+                                     test_t.reshape(t_size, t_size, t_channel), 
+                                     test_w.reshape(t_size, t_size, t_channel),
+                                     test_img.reshape(t_size, t_size, t_channel))
                 
             print("Epoch: {}/{}".format(e+1, epochs), "Time: %s" % (time.time() - start_test))
             
-
             chk_name = log_dir + "/chk/" + str(int((e+1)/chk_interval)) + "/nf.ckpt"
             chk_name = make_path(chk_name)
             saver = tf.train.Saver()
