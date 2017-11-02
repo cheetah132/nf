@@ -365,7 +365,8 @@ with g.as_default():
     total_cost = l_loss + t_loss + w_loss
     opt = tf.train.AdamOptimizer(learning_rate).minimize(total_cost)
     
-    config = tf.ConfigProto(allow_soft_placement = True)
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+    config.gpu_options.allow_growth = True
     sess = tf.Session(config = config)
     
     sess.run(tf.global_variables_initializer())
