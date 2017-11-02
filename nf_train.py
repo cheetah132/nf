@@ -40,15 +40,15 @@ plt.ioff()
 
 print('Set Train Data')
 # set train data
-batch_size = 100
+batch_size = 128
 
 train_set = []
 
-landmarks_frame = pd.read_csv('./face_landmarks_detects.csv')
+landmarks_frame = pd.read_csv('./face_landmarks_base.csv')
 file_list = landmarks_frame.image_name.values.tolist()
 
-avgP_container = np.load('f_avgP_list.npz')
-emb_container = np.load('f_emb_list.npz')
+avgP_container = np.load('f_avgP_list_base.npz')
+emb_container = np.load('f_emb_list_base.npz')
 
 for key in sorted(emb_container, key=lambda x: int(x.strip('arr_'))) :
     batch = avgP_container[key], emb_container[key]
@@ -265,10 +265,10 @@ def make_path(file_name) :
 print(make_path(loss_file_name))
 
 # hyperparam
-epochs = 100
+epochs = 5000
 learning_rate = 1e-4
-chk_interval = 5
-log_interval = 1
+chk_interval = 100
+log_interval = 8
 
 avgP_num = 1792
 emb_num = 128
@@ -368,6 +368,8 @@ with g.as_default():
     config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
     config.gpu_options.allow_growth = True
     sess = tf.Session(config = config)
+    
+    #train_writer = tf.summary.FileWriter(log_dir + '/board',sess.graph)
     
     sess.run(tf.global_variables_initializer())
 
