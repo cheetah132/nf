@@ -100,67 +100,56 @@ def landmark_decode(net, landmark_num = 68, is_training=False):
 
 def CNN(F, size) :
     with tf.variable_scope('CNN') :
-        # 10 x 10 x 1024
+        # 10 x 10 x 256
         with tf.variable_scope('features') :
             f_size = int(size / 16)
-            features = slim.fully_connected(F, f_size * f_size * 512, weights_initializer= l_init(), activation_fn=None, scope="features")
-            features = tf.reshape(features, [-1, f_size, f_size, 512])
+            features = slim.fully_connected(F, f_size * f_size * 256, weights_initializer= l_init(), activation_fn=None, scope="features")
+            features = tf.reshape(features, [-1, f_size, f_size, 256])
             features = tf.nn.relu(features)
             print(features.shape)
             
-        # 10 x 10 x 512
+        # 20 x 20 x 128
         with tf.variable_scope('upsample_0') :
-            conv_0 = tf.layers.conv2d(features, 512, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
-            conv_0 = tf.layers.conv2d(conv_0, 512, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_0 = tf.layers.conv2d(features, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_0 = tf.layers.conv2d(conv_0, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
             conv_0 = tf.nn.relu(conv_0 + features)
             print(conv_0.shape)
         
-        # 20 x 20 x 256
+        # 40 x 40 x 64
         with tf.variable_scope('upsample_1') :
             f_size *= 2
             upsample_1 = tf.image.resize_nearest_neighbor(conv_0, (f_size, f_size))
-            conv_1 = tf.layers.conv2d(upsample_1, 256, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
-            conv_1 = tf.layers.conv2d(upsample_1, 256, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_1 = tf.layers.conv2d(upsample_1, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_1 = tf.layers.conv2d(upsample_1, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
             
-            upsample_1 = tf.layers.conv2d(upsample_1, 256, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            upsample_1 = tf.layers.conv2d(upsample_1, 64, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
             conv_1 = tf.nn.relu(conv_1 + upsample_1)
             print(conv_1.shape)
     
-        # 40 x 40 x 128
+        # 80 x 80 x 32
         with tf.variable_scope('upsample_2') :
             f_size *= 2
             upsample_2 = tf.image.resize_nearest_neighbor(conv_1, (f_size, f_size))
-            conv_2 = tf.layers.conv2d(upsample_2, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
-            conv_2 = tf.layers.conv2d(upsample_2, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_2 = tf.layers.conv2d(upsample_2, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_2 = tf.layers.conv2d(upsample_2, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
             
-            upsample_2 = tf.layers.conv2d(upsample_2, 128, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            upsample_2 = tf.layers.conv2d(upsample_2, 32, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
             conv_2 = tf.nn.relu(conv_2 + upsample_2)
             print(conv_2.shape)
         
-        # 80 x 80 x 64
+        # 160 x 160 x 32
         with tf.variable_scope('upsample_3') :
             f_size *= 2
             upsample_3 = tf.image.resize_nearest_neighbor(conv_2, (f_size, f_size))
-            conv_3 = tf.layers.conv2d(upsample_3, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
-            conv_3 = tf.layers.conv2d(upsample_3, 64, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_3 = tf.layers.conv2d(upsample_3, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            conv_3 = tf.layers.conv2d(upsample_3, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
             
-            upsample_3 = tf.layers.conv2d(upsample_3, 64, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            upsample_3 = tf.layers.conv2d(upsample_3, 32, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
             conv_3 = tf.nn.relu(conv_3 + upsample_3)
             print(conv_3.shape)
         
-        # 160 x 160 x 32
-        with tf.variable_scope('upsample_4') :
-            f_size *= 2
-            upsample_4 = tf.image.resize_nearest_neighbor(conv_3, (f_size, f_size))
-            conv_4 = tf.layers.conv2d(upsample_4, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
-            conv_4 = tf.layers.conv2d(upsample_4, 32, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
-            
-            upsample_4 = tf.layers.conv2d(upsample_4, 32, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
-            conv_4 = tf.nn.relu(conv_4 + upsample_4)
-            print(upsample_4.shape)
-        
         with tf.variable_scope('one_by_one_conv') :
-            one_by_one_conv = tf.layers.conv2d(conv_4, 3, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            one_by_one_conv = tf.layers.conv2d(conv_3, 3, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
         
     return one_by_one_conv
 
@@ -365,7 +354,7 @@ with g.as_default():
     total_cost = l_loss + t_loss + w_loss
     opt = tf.train.AdamOptimizer(learning_rate).minimize(total_cost)
     
-    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+    config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
     sess = tf.Session(config = config)
     
