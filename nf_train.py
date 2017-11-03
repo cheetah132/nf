@@ -40,15 +40,15 @@ plt.ioff()
 
 print('Set Train Data')
 # set train data
-batch_size = 128
+batch_size = 100
 
 train_set = []
 
-landmarks_frame = pd.read_csv('./face_landmarks_base.csv')
+landmarks_frame = pd.read_csv('./face_landmarks_detects.csv')
 file_list = landmarks_frame.image_name.values.tolist()
 
-avgP_container = np.load('f_avgP_list_base.npz')
-emb_container = np.load('f_emb_list_base.npz')
+avgP_container = np.load('f_avgP_list.npz')
+emb_container = np.load('f_emb_list.npz')
 
 for key in sorted(emb_container, key=lambda x: int(x.strip('arr_'))) :
     batch = avgP_container[key], emb_container[key]
@@ -57,6 +57,7 @@ for key in sorted(emb_container, key=lambda x: int(x.strip('arr_'))) :
 
 t_dataset = helper.Dataset('nf',file_list, 160)
 
+print(len(train_set))
 
 test_set = []
 
@@ -110,9 +111,13 @@ def CNN(F, size) :
             
         # 20 x 20 x 128
         with tf.variable_scope('upsample_0') :
-            conv_0 = tf.layers.conv2d(features, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
+            f_size *= 2
+            upsample_0 = tf.image.resize_nearest_neighbor(features, (f_size, f_size))
+            conv_0 = tf.layers.conv2d(upsample_0, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=tf.nn.relu)
             conv_0 = tf.layers.conv2d(conv_0, 128, (3,3), padding='same', kernel_initializer= l_init(), activation=None)
-            conv_0 = tf.nn.relu(conv_0 + features)
+            
+            upsample_0 = tf.layers.conv2d(upsample_0, 128, (1,1), padding='same', kernel_initializer= l_init(), activation=None)
+            conv_0 = tf.nn.relu(conv_0 + upsample_0)
             print(conv_0.shape)
         
         # 40 x 40 x 64
@@ -254,10 +259,11 @@ def make_path(file_name) :
 print(make_path(loss_file_name))
 
 # hyperparam
-epochs = 5000
+epochs = 500
 learning_rate = 1e-4
-chk_interval = 100
-log_interval = 8
+chk_interval = 5
+log_interval = 100
+test_interval = 100
 
 avgP_num = 1792
 emb_num = 128
@@ -462,8 +468,9 @@ with g.as_default():
                 w_cost_sum += w_cost
 
                 if (i+1) % log_interval == 0 :
-                    loss_log = "Iter: {}/{}".format(i+1, len(train_set))
-                    loss_log += "Training loss: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_interval, 
+                    loss_log = "E: {}/{} ".format(e+1, epochs)
+                    loss_log += "I: {}/{} ".format(i+1, len(train_set))
+                    loss_log += "TL: X = {:.4f}, Y = {:.4f}, T = {:.4f}, W = {:.4f}".format(l_x_cost_sum / log_interval, 
                                                                                                        l_y_cost_sum / log_interval, 
                                                                                                        t_cost_sum / log_interval, 
                                                                                                        w_cost_sum / log_interval)
@@ -476,9 +483,10 @@ with g.as_default():
                     l_y_cost_sum = 0
                     t_cost_sum = 0
                     w_cost_sum = 0
-        
-                    test_index = (random.randint(0, len(train_set)-1),random.randint(0, len(train_set[0])-1))
-                    test_avgP = train_set[test_index[0]][test_index[1]]
+            
+                if (i+1) % test_interval == 0 :
+                    test_index = (random.randint(0, len(train_set)-1),random.randint(0, len(train_set[0][0])-1))
+                    test_avgP = train_set[test_index[0]][0][test_index[1]]
                     t_landmarks = get_landmarks(test_index)
 
                     t_img = misc.imread(t_landmarks[0])
@@ -492,8 +500,8 @@ with g.as_default():
 
                     t_t, t_w = sess.run(test_run, feed_dict= test_feed)
 
-                    test_index = random.randint(0, len(test_set[0])-1)
-                    test_avgP = test_set[0][test_index]
+                    test_index = random.randint(0, len(test_set[0][0])-1)
+                    test_avgP = test_set[0][0][test_index]
                     test_img = misc.imread(t_file_list[test_index])
 
                     test_run = t_preds
@@ -512,6 +520,7 @@ with g.as_default():
                                      l_y_labels : dl[:,1].reshape(-1, l_num)}
 
                         test_w = sess.run(test_run, feed_dict= test_feed)
+                        test_w = test_w.reshape(t_size, t_size, t_channel)
                     else :
                         test_w = None
 
@@ -520,13 +529,13 @@ with g.as_default():
                                      t_w.reshape(t_size, t_size, t_channel), 
                                      t_img.reshape(t_size, t_size, t_channel), 
                                      test_t.reshape(t_size, t_size, t_channel), 
-                                     test_w.reshape(t_size, t_size, t_channel),
+                                     test_w,
                                      test_img.reshape(t_size, t_size, t_channel))
-                
-            print("Epoch: {}/{}".format(e+1, epochs), "Time: %s" % (time.time() - start_test))
-            
-            chk_name = log_dir + "/chk/" + str(int((e+1)/chk_interval)) + "/nf.ckpt"
-            chk_name = make_path(chk_name)
-            saver = tf.train.Saver()
-            save_path = saver.save(sess, chk_name)
-            print("Model saved in file: %s" % save_path, "Time: %s" % (time.time() - start_test))
+                print("Epoch: {}/{}".format(e+1, epochs), "Time: %s" % (time.time() - start_test))
+
+            if (e+1) % chk_interval == 0 :
+                chk_name = log_dir + "/chk/" + str(int((e+1)/chk_interval)) + "/nf.ckpt"
+                chk_name = make_path(chk_name)
+                saver = tf.train.Saver()
+                save_path = saver.save(sess, chk_name)
+                print("Model saved in file: %s" % save_path, "Time: %s" % (time.time() - start_test))
